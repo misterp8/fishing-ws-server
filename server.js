@@ -98,6 +98,19 @@ wss.on('connection', (ws) => {
                     }
                     break;
                 
+                // NEW: Handle Feedback (Vibration) from Display -> Active Controller
+                case 'FEEDBACK':
+                    if (ws.role === 'DISPLAY') {
+                        const activePlayer = players[0];
+                        if (activePlayer && activePlayer.ws.readyState === 1) {
+                            activePlayer.ws.send(JSON.stringify({
+                                type: 'FEEDBACK',
+                                payload: data.payload // 'VIBRATE_START' or 'VIBRATE_STOP'
+                            }));
+                        }
+                    }
+                    break;
+
                 case 'PING':
                     ws.send(JSON.stringify({ type: 'PONG' }));
                     break;
