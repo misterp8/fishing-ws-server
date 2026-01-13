@@ -55,6 +55,12 @@ wss.on('connection', (ws) => {
                     // Add to players map
                     players.set(ws, { id: ws.id, name: playerName });
 
+                    // IMPORTANT: Tell the controller what its ID is
+                    ws.send(JSON.stringify({
+                        type: 'REGISTERED',
+                        payload: { id: ws.id }
+                    }));
+
                     // Update everyone
                     broadcastState();
                     break;
@@ -148,7 +154,7 @@ function broadcastState() {
         payload: currentPlayerName // Sending Name for compatibility with existing controller code
     });
     
-    // Also send the ID to the Display so it knows exactly which ID is active
+    // Also send the ID to EVERYONE so controllers can verify their own ID
     const turnIdMsg = JSON.stringify({
         type: 'CURRENT_PLAYER_ID',
         payload: currentTurnPlayerId
@@ -166,6 +172,7 @@ function broadcastState() {
         if (socket.readyState === 1) {
             socket.send(msg);
             socket.send(turnMsg);
+            socket.send(turnIdMsg); // NOW SENDING ID TO CONTROLLERS TOO
         }
     });
 }
