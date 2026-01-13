@@ -3,26 +3,24 @@ const { WebSocketServer } = require('ws');
 const http = require('http');
 const { v4: uuidv4 } = require('uuid');
 
-// Render requires binding to a port provided by environment variable
 const port = process.env.PORT || 8080;
 const server = http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Fishing Game Server is Running!');
+    res.end('Fishing Game Server (Strict Queue Mode) Running!');
 });
 
 const wss = new WebSocketServer({ server });
 
-// Game State
 let displaySocket = null;
-const players = new Map(); // Key: Socket, Value: { id, name }
-let currentTurnPlayerId = null;
-let currentTurnPlayerName = null; // Track Name to allow reconnection/hijacking
+// Players is now an ARRAY to enforce order.
+// { ws: socket, id: string, name: string }
+let players = []; 
 
 console.log(`Server started on port ${port}`);
 
 wss.on('connection', (ws) => {
     ws.isAlive = true;
-    ws.id = uuidv4(); // Unique ID for every connection
+    ws.id = uuidv4(); 
 
     ws.on('pong', () => { ws.isAlive = true; });
 
@@ -31,7 +29,6 @@ wss.on('connection', (ws) => {
             const data = JSON.parse(message);
 
             switch (data.type) {
-                // 1. The Main Game Screen connects
                 case 'REGISTER_DISPLAY':
                     console.log('Display connected');
                     if (displaySocket && displaySocket.readyState === 1) {
@@ -42,24 +39,17 @@ wss.on('connection', (ws) => {
                     broadcastState();
                     break;
 
-                // 2. A Mobile Controller connects
                 case 'REGISTER_CONTROLLER':
                     const playerName = data.payload.name || `P-${ws.id.substr(0,4)}`;
-                    console.log(`Player connected: ${playerName} (${ws.id})`);
+                    console.log(`Player Join: ${playerName}`);
                     
                     ws.role = 'CONTROLLER';
                     ws.playerName = playerName;
-                    players.set(ws, { id: ws.id, name: playerName });
+                    
+                    // Add to end of queue
+                    players.push({ ws, id: ws.id, name: playerName });
 
-                    // --- ROBUST RECONNECT LOGIC (Name Hijacking) ---
-                    // If the game is waiting for "Bob", and "Bob" connects (new ID),
-                    // update the turn ID to this new socket so they can play immediately.
-                    if (currentTurnPlayerName && playerName === currentTurnPlayerName) {
-                        console.log(`♻️ RECONNECT: ${playerName} rejoined. Transferring control to new ID ${ws.id}`);
-                        currentTurnPlayerId = ws.id;
-                    }
-
-                    // Tell the controller its ID
+                    // Tell controller its ID
                     ws.send(JSON.stringify({
                         type: 'REGISTERED',
                         payload: { id: ws.id }
@@ -68,58 +58,42 @@ wss.on('connection', (ws) => {
                     broadcastState();
                     break;
 
-                // 3. Teacher Selects a Player
                 case 'SET_ACTIVE_PLAYER':
                     if (ws.role === 'DISPLAY') {
-                        const targetId = data.payload; // ID or null
-                        currentTurnPlayerId = targetId;
+                        const targetId = data.payload;
+                        console.log(`Teacher requested: ${targetId}`);
                         
-                        // Update the cached Name
                         if (targetId) {
-                            // Find the player object to get the name
-                            let found = false;
-                            for (let [socket, p] of players) {
-                                if (p.id === targetId) {
-                                    currentTurnPlayerName = p.name;
-                                    found = true;
-                                    break;
-                                }
+                            const index = players.findIndex(p => p.id === targetId);
+                            if (index > -1) {
+                                // MOVE TO FRONT (Jump Queue)
+                                const p = players.splice(index, 1)[0];
+                                players.unshift(p);
+                                console.log(`Moved ${p.name} to front of queue.`);
                             }
-                            if (!found) currentTurnPlayerName = null; // Should not happen usually
-                        } else {
-                            currentTurnPlayerName = null;
                         }
-
-                        console.log(`Teacher selected: ${currentTurnPlayerName} (${currentTurnPlayerId})`);
                         broadcastState();
                     }
                     break;
 
-                // 4. Game Action
                 case 'ACTION':
                     if (ws.role === 'CONTROLLER') {
-                        // Strict ID check, but Reconnect Logic makes this safe
-                        if (currentTurnPlayerId === ws.id) {
+                        // Strict Rule: Only Index 0 can play
+                        const activePlayer = players[0];
+                        
+                        if (activePlayer && activePlayer.id === ws.id) {
+                            console.log(`Action accepted from leader: ${ws.playerName}`);
                             if (displaySocket && displaySocket.readyState === 1) {
                                 displaySocket.send(JSON.stringify({
                                     type: 'ACTION',
                                     payload: data.action, 
                                     player: ws.playerName
                                 }));
-                                console.log(`Action forwarded: ${data.action} from ${ws.playerName}`);
                             }
                         } else {
-                            // Debugging for "Green Screen but No Control"
-                            console.warn(`Blocked action from ${ws.playerName} (${ws.id}). Expecting: ${currentTurnPlayerId}`);
-                            
-                            // Edge Case Recovery:
-                            // If IDs don't match, but Names DO, force an update (Self-healing)
-                            if (currentTurnPlayerName && ws.playerName === currentTurnPlayerName) {
-                                console.log("⚠️ Self-Healing: Name match detected on blocked action. Updating ID.");
-                                currentTurnPlayerId = ws.id;
-                                // Retry sending action? No, just let the next one succeed.
-                                broadcastState();
-                            }
+                            // Debugging
+                            const rank = players.findIndex(p => p.id === ws.id);
+                            console.log(`Ignored action from Rank ${rank} (${ws.playerName}). Leader is ${activePlayer?.name}`);
                         }
                     }
                     break;
@@ -138,56 +112,48 @@ wss.on('connection', (ws) => {
             console.log('Display disconnected');
             displaySocket = null;
         } else if (ws.role === 'CONTROLLER') {
-            console.log(`Player disconnected: ${ws.playerName}`);
-            players.delete(ws);
-            
-            // NOTE: Do NOT set currentTurnPlayerId to null immediately.
-            // This allows the user to refresh the page and "reclaim" their spot via Name Hijacking.
-            // The teacher can manually deselect if needed.
-            
+            console.log(`Player Left: ${ws.playerName}`);
+            // Remove from queue
+            players = players.filter(p => p.ws !== ws);
             broadcastState();
         }
     });
 });
 
 function broadcastState() {
-    const playerList = Array.from(players.values()).map(p => ({
+    // 1. Queue Update
+    const queueList = players.map(p => ({
         id: p.id,
         name: p.name
     }));
 
-    const msg = JSON.stringify({
-        type: 'QUEUE_UPDATE',
-        payload: playerList 
-    });
+    // 2. Who is active? ALWAYS index 0
+    const activePlayer = players.length > 0 ? players[0] : null;
+    const activeId = activePlayer ? activePlayer.id : null;
+    const activeName = activePlayer ? activePlayer.name : null;
 
-    // Send Name (Legacy/Visual)
-    const turnMsg = JSON.stringify({
-        type: 'CURRENT_PLAYER',
-        payload: currentTurnPlayerName 
-    });
-    
-    // Send ID (Logic)
-    const turnIdMsg = JSON.stringify({
-        type: 'CURRENT_PLAYER_ID',
-        payload: currentTurnPlayerId
-    });
+    const msgQueue = JSON.stringify({ type: 'QUEUE_UPDATE', payload: queueList });
+    const msgTurnId = JSON.stringify({ type: 'CURRENT_PLAYER_ID', payload: activeId });
+    const msgTurnName = JSON.stringify({ type: 'CURRENT_PLAYER', payload: activeName });
 
+    // Send to Display
     if (displaySocket && displaySocket.readyState === 1) {
-        displaySocket.send(msg);
-        displaySocket.send(turnMsg);
-        displaySocket.send(turnIdMsg);
+        displaySocket.send(msgQueue);
+        displaySocket.send(msgTurnId);
+        displaySocket.send(msgTurnName);
     }
 
-    players.forEach((info, socket) => {
-        if (socket.readyState === 1) {
-            socket.send(msg);
-            socket.send(turnMsg);
-            socket.send(turnIdMsg);
+    // Send to Controllers
+    players.forEach(p => {
+        if (p.ws.readyState === 1) {
+            p.ws.send(msgQueue);
+            p.ws.send(msgTurnId);
+            p.ws.send(msgTurnName);
         }
     });
 }
 
+// Heartbeat
 const interval = setInterval(function ping() {
     wss.clients.forEach(function each(ws) {
         if (ws.isAlive === false) return ws.terminate();
