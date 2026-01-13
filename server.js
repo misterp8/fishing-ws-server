@@ -111,6 +111,18 @@ wss.on('connection', (ws) => {
                     }
                     break;
 
+                // NEW: Cycle the queue for the next turn
+                case 'NEXT_TURN':
+                    if (ws.role === 'DISPLAY') {
+                        if (players.length > 0) {
+                            const p = players.shift(); // Remove first
+                            players.push(p); // Add to end
+                            console.log(`Turn cycled. Previous: ${p.name}, New Leader: ${players[0]?.name}`);
+                            broadcastState();
+                        }
+                    }
+                    break;
+
                 case 'PING':
                     ws.send(JSON.stringify({ type: 'PONG' }));
                     break;
