@@ -117,8 +117,9 @@ function handlePlayerDisconnect(ws) {
     // Remove from Players Map
     players.delete(ws);
 
-    // If the active player left, reset turn
+    // If the active player left, reset turn immediately
     if (currentTurnPlayerId === ws.id) {
+        console.log("Active player disconnected, resetting turn.");
         currentTurnPlayerId = null;
     }
 
