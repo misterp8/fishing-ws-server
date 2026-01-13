@@ -1,3 +1,4 @@
+
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const { v4: uuidv4 } = require('uuid');
@@ -14,14 +15,13 @@ const wss = new WebSocketServer({ server });
 // Game State
 let displaySocket = null;
 const players = new Map(); // Key: Socket, Value: { id, name }
-let queue = []; // Array of { id, name, socket }
 let currentTurnPlayerId = null;
 
 console.log(`Server started on port ${port}`);
 
 wss.on('connection', (ws) => {
     ws.isAlive = true;
-    ws.id = uuidv4(); // Temporary ID until registered
+    ws.id = uuidv4(); // Unique ID for every connection
 
     ws.on('pong', () => { ws.isAlive = true; });
 
@@ -47,7 +47,7 @@ wss.on('connection', (ws) => {
                 // 2. A Mobile Controller connects
                 case 'REGISTER_CONTROLLER':
                     const playerName = data.payload.name || `P-${ws.id.substr(0,4)}`;
-                    console.log(`Player connected: ${playerName}`);
+                    console.log(`Player connected: ${playerName} (${ws.id})`);
                     
                     ws.role = 'CONTROLLER';
                     ws.playerName = playerName;
@@ -55,17 +55,21 @@ wss.on('connection', (ws) => {
                     // Add to players map
                     players.set(ws, { id: ws.id, name: playerName });
 
-                    // Add to queue
-                    queue.push({ id: ws.id, name: playerName, socket: ws });
-
-                    // Check if game needs a start
-                    checkTurnRotation();
-                    
                     // Update everyone
                     broadcastState();
                     break;
 
-                // 3. Game Action (Cast, Reel, Left, Right)
+                // 3. Teacher Selects a Player (Sent from Display)
+                case 'SET_ACTIVE_PLAYER':
+                    if (ws.role === 'DISPLAY') {
+                        const targetId = data.payload; // ID or null
+                        currentTurnPlayerId = targetId;
+                        console.log(`Teacher selected player ID: ${targetId}`);
+                        broadcastState();
+                    }
+                    break;
+
+                // 4. Game Action (Cast, Reel, Left, Right)
                 case 'ACTION':
                     if (ws.role === 'CONTROLLER') {
                         // Only accept actions from the current player
@@ -73,7 +77,7 @@ wss.on('connection', (ws) => {
                             if (displaySocket && displaySocket.readyState === 1) {
                                 displaySocket.send(JSON.stringify({
                                     type: 'ACTION',
-                                    payload: data.action, // 'LEFT', 'RIGHT', 'CLICK'
+                                    payload: data.action, // 'LEFT', 'RIGHT', 'CLICK', 'UP', 'DOWN'
                                     player: ws.playerName
                                 }));
                             }
@@ -81,7 +85,7 @@ wss.on('connection', (ws) => {
                     }
                     break;
                 
-                // Keep-alive ping from client (optional, but handled by heartbeat below)
+                // Keep-alive ping from client
                 case 'PING':
                     ws.send(JSON.stringify({ type: 'PONG' }));
                     break;
@@ -107,56 +111,54 @@ function handlePlayerDisconnect(ws) {
     // Remove from Players Map
     players.delete(ws);
 
-    // Remove from Queue
-    const wasCurrentTurn = (currentTurnPlayerId === ws.id);
-    queue = queue.filter(p => p.id !== ws.id);
-
-    // If the active player left, rotate turn
-    if (wasCurrentTurn) {
+    // If the active player left, reset turn
+    if (currentTurnPlayerId === ws.id) {
         currentTurnPlayerId = null;
-        checkTurnRotation();
     }
 
     broadcastState();
 }
 
-// Logic to rotate turns
-function checkTurnRotation() {
-    // If nobody is playing and we have people in queue
-    if (!currentTurnPlayerId && queue.length > 0) {
-        // Pick first in line
-        const nextPlayer = queue[0]; // Logic: Winner stays? Or simple rotation? 
-        // Let's do simple FIFO: The person at index 0 is playing. 
-        // If you want "Pass the pad" style where user plays once then goes to back, logic changes here.
-        // Current logic: queue[0] is always the active player.
-        
-        currentTurnPlayerId = nextPlayer.id;
-        console.log(`New turn: ${nextPlayer.name}`);
-    } else if (queue.length === 0) {
-        currentTurnPlayerId = null;
-    }
-}
-
-// Send Queue info and Current Player info to everyone
+// Send Player List and Current Player info to everyone
 function broadcastState() {
-    const queueNames = queue.map(p => p.name);
-    const currentPlayerObj = queue.find(p => p.id === currentTurnPlayerId);
-    const currentPlayerName = currentPlayerObj ? currentPlayerObj.name : null;
+    // Convert Map to Array of objects for the frontend
+    const playerList = Array.from(players.values()).map(p => ({
+        id: p.id,
+        name: p.name
+    }));
+
+    // Find the name of the current player for the controllers (who rely on name matching)
+    // and for the display to show who is active
+    let currentPlayerName = null;
+    if (currentTurnPlayerId) {
+        // Find player by ID in the values
+        const activeObj = playerList.find(p => p.id === currentTurnPlayerId);
+        if (activeObj) {
+            currentPlayerName = activeObj.name;
+        }
+    }
 
     const msg = JSON.stringify({
         type: 'QUEUE_UPDATE',
-        payload: queueNames
+        payload: playerList // Now sending [{id, name}, ...] instead of just names
     });
 
     const turnMsg = JSON.stringify({
         type: 'CURRENT_PLAYER',
-        payload: currentPlayerName
+        payload: currentPlayerName // Sending Name for compatibility with existing controller code
+    });
+    
+    // Also send the ID to the Display so it knows exactly which ID is active
+    const turnIdMsg = JSON.stringify({
+        type: 'CURRENT_PLAYER_ID',
+        payload: currentTurnPlayerId
     });
 
     // 1. Send to Display
     if (displaySocket && displaySocket.readyState === 1) {
         displaySocket.send(msg);
         displaySocket.send(turnMsg);
+        displaySocket.send(turnIdMsg);
     }
 
     // 2. Send to All Controllers
@@ -167,9 +169,6 @@ function broadcastState() {
         }
     });
 }
-
-// Optional: Rotate turn automatically after X seconds or upon 'GAME_OVER' event from Display
-// For now, we assume the player stays until they disconnect or we implement a "DONE" message from Display.
 
 // --- Heartbeat to keep connections alive on Render ---
 const interval = setInterval(function ping() {
