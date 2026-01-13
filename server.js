@@ -41,7 +41,7 @@ wss.on('connection', (ws) => {
 
                 case 'REGISTER_CONTROLLER':
                     const playerName = data.payload.name || `P-${ws.id.substr(0,4)}`;
-                    console.log(`Player Join: ${playerName}`);
+                    console.log(`Player Join: ${playerName} (Total: ${players.length + 1})`);
                     
                     ws.role = 'CONTROLLER';
                     ws.playerName = playerName;
@@ -59,7 +59,7 @@ wss.on('connection', (ws) => {
                     break;
 
                 case 'SET_ACTIVE_PLAYER':
-                    if (ws.role === 'DISPLAY') {
+                    if (ws === displaySocket || ws.role === 'DISPLAY') {
                         const targetId = data.payload;
                         console.log(`Teacher requested: ${targetId}`);
                         
@@ -93,14 +93,14 @@ wss.on('connection', (ws) => {
                         } else {
                             // Debugging
                             const rank = players.findIndex(p => p.id === ws.id);
-                            console.log(`Ignored action from Rank ${rank} (${ws.playerName}). Leader is ${activePlayer?.name}`);
+                            // console.log(`Ignored action from Rank ${rank} (${ws.playerName}). Leader is ${activePlayer?.name}`);
                         }
                     }
                     break;
                 
                 // NEW: Handle Feedback (Vibration) from Display -> Active Controller
                 case 'FEEDBACK':
-                    if (ws.role === 'DISPLAY') {
+                    if (ws === displaySocket || ws.role === 'DISPLAY') {
                         const activePlayer = players[0];
                         if (activePlayer && activePlayer.ws.readyState === 1) {
                             activePlayer.ws.send(JSON.stringify({
@@ -113,13 +113,23 @@ wss.on('connection', (ws) => {
 
                 // NEW: Cycle the queue for the next turn
                 case 'NEXT_TURN':
-                    if (ws.role === 'DISPLAY') {
+                    if (ws === displaySocket || ws.role === 'DISPLAY') {
+                        console.log(`NEXT_TURN received. Current Queue Length: ${players.length}`);
+                        
+                        // 1. Clean up dead connections first to ensure rotation is real
+                        players = players.filter(p => p.ws.readyState === 1);
+
                         if (players.length > 0) {
-                            const p = players.shift(); // Remove first
-                            players.push(p); // Add to end
-                            console.log(`Turn cycled. Previous: ${p.name}, New Leader: ${players[0]?.name}`);
-                            broadcastState();
+                            // 2. Rotate: Shift first to last
+                            const p = players.shift(); 
+                            players.push(p); 
+                            
+                            console.log(`Turn cycled. New Leader: ${players[0]?.name}`);
+                        } else {
+                             console.log("Queue empty, cannot cycle.");
                         }
+                        
+                        broadcastState();
                     }
                     break;
 
@@ -133,7 +143,7 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        if (ws.role === 'DISPLAY') {
+        if (ws === displaySocket) {
             console.log('Display disconnected');
             displaySocket = null;
         } else if (ws.role === 'CONTROLLER') {
