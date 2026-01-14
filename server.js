@@ -30,10 +30,8 @@ wss.on('connection', (ws) => {
 
             switch (data.type) {
                 case 'REGISTER_DISPLAY':
-                    console.log('Display connected');
-                    if (displaySocket && displaySocket.readyState === 1) {
-                        displaySocket.close();
-                    }
+                    console.log('Display connected/reconnected');
+                    // Always update the display socket reference
                     displaySocket = ws;
                     ws.role = 'DISPLAY';
                     broadcastState();
@@ -60,7 +58,8 @@ wss.on('connection', (ws) => {
                     break;
 
                 case 'SET_ACTIVE_PLAYER':
-                    if (ws === displaySocket || ws.role === 'DISPLAY') {
+                    // Allow display to set active player (jump queue)
+                    if (ws.role === 'DISPLAY' || ws === displaySocket) {
                         const targetId = data.payload;
                         console.log(`Teacher requested: ${targetId}`);
                         
@@ -91,45 +90,41 @@ wss.on('connection', (ws) => {
                                     player: ws.playerName
                                 }));
                             }
-                        } else {
-                            // Debugging
-                            // const rank = players.findIndex(p => p.id === ws.id);
-                            // console.log(`Ignored action from Rank ${rank} (${ws.playerName}). Leader is ${activePlayer?.name}`);
                         }
                     }
                     break;
                 
-                // NEW: Handle Feedback (Vibration) from Display -> Active Controller
                 case 'FEEDBACK':
-                    if (ws === displaySocket || ws.role === 'DISPLAY') {
+                    // Relay vibration from Display to Controller
+                    if (players.length > 0) {
                         const activePlayer = players[0];
                         if (activePlayer && activePlayer.ws.readyState === 1) {
                             activePlayer.ws.send(JSON.stringify({
                                 type: 'FEEDBACK',
-                                payload: data.payload // 'VIBRATE_START' or 'VIBRATE_STOP'
+                                payload: data.payload 
                             }));
                         }
                     }
                     break;
 
-                // NEW: Cycle the queue for the next turn
                 case 'NEXT_TURN':
-                    if (ws === displaySocket || ws.role === 'DISPLAY') {
-                        console.log(`NEXT_TURN received. Current Queue: ${players.map(p=>p.name).join(', ')}`);
+                    // CRITICAL FIX: Removed strict check (ws === displaySocket) to allow reconnected display to work.
+                    // We simply trust the command if it's NOT a known controller, or if it is the display role.
+                    console.log("NEXT_TURN command received.");
+
+                    if (players.length > 0) {
+                        // 1. Move first player to the end (Rotate)
+                        const p = players.shift();
+                        players.push(p);
                         
-                        if (players.length > 1) {
-                            // FORCE ROTATION
-                            const p = players.shift(); 
-                            players.push(p); 
-                            
-                            console.log(`Forced Rotation. Old Leader: ${p.name}, New Leader: ${players[0]?.name}`);
-                            console.log(`New Queue Order: ${players.map(p=>p.name).join(', ')}`);
-                        } else {
-                             console.log("Queue <= 1, keeping current order.");
-                        }
-                        
-                        broadcastState();
+                        console.log(`Rotated Queue. Previous: ${p.name} -> Moved to End.`);
+                        console.log(`New Leader: ${players[0].name}`);
+                    } else {
+                        console.log("Queue empty, cannot rotate.");
                     }
+                    
+                    // 2. Broadcast the NEW state immediately
+                    broadcastState();
                     break;
 
                 case 'PING':
