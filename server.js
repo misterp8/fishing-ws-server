@@ -99,7 +99,7 @@ wss.on('connection', (ws) => {
 
             // --- 2. GAME COMMANDS (DISPLAY ONLY) ---
             
-            // NEXT_TURN: Kick current player and shift queue
+            // NEXT_TURN: AGGRESSIVE KICK
             if (data.type === 'NEXT_TURN') {
                 // Check if sender is display (Relaxed check: allow if it matches displaySocket ref)
                 const isDisplay = ws.role === 'DISPLAY' || ws === displaySocket;
@@ -108,20 +108,24 @@ wss.on('connection', (ws) => {
                 console.log('[GAME] Next Turn Requested');
 
                 if (players.length > 0) {
+                    // 1. Capture the player to be removed
                     const finishingPlayer = players[0];
                     
-                    // 1. Send FORCE_RELOAD to the player who is done (Kick them out)
-                    if (finishingPlayer && finishingPlayer.ws.readyState === 1) {
-                         console.log(`[GAME] Sending FORCE_RELOAD to ${finishingPlayer.name}`);
-                         finishingPlayer.ws.send(JSON.stringify({ type: 'FORCE_RELOAD' }));
-                    }
-
-                    // 2. REMOVE THEM from the queue immediately.
-                    // This creates space for the next person.
-                    // We DO NOT rotate them to the back. We remove them.
+                    // 2. Remove from queue IMMEDIATELY so they don't get the next state update
                     players.shift();
-                    
-                    console.log(`[GAME] Player removed. Queue length: ${players.length}`);
+                    console.log(`[GAME] Removed ${finishingPlayer.name}. Queue length: ${players.length}`);
+
+                    // 3. Send FORCE_RELOAD and CLOSE SOCKET
+                    if (finishingPlayer && finishingPlayer.ws.readyState === 1) {
+                         console.log(`[GAME] Sending FORCE_RELOAD to ${finishingPlayer.name} and closing socket.`);
+                         try {
+                            finishingPlayer.ws.send(JSON.stringify({ type: 'FORCE_RELOAD' }));
+                            // Force close from server side to prevent ghost connections
+                            finishingPlayer.ws.close(); 
+                         } catch (err) {
+                             console.error("Error kicking player:", err);
+                         }
+                    }
                 }
 
                 broadcastState();
@@ -200,7 +204,7 @@ wss.on('connection', (ws) => {
         // Check if it was a player
         const pIndex = players.findIndex(p => p.id === ws.id);
         if (pIndex > -1) {
-            // Only remove if they are still in the list (i.e. if NEXT_TURN didn't remove them yet)
+            // Only remove if they are still in the list (e.g., unexpected disconnect)
             const p = players[pIndex];
             console.log(`[CONN] Player Left (Connection Closed): ${p.name}`);
             players.splice(pIndex, 1);
