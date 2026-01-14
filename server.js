@@ -6,193 +6,204 @@ const { v4: uuidv4 } = require('uuid');
 const port = process.env.PORT || 8080;
 const server = http.createServer((req, res) => {
     res.writeHead(200);
-    res.end('Fishing Game Server (Strict Queue Mode) Running!');
+    res.end('Fishing Game Server (Robust Queue Mode) Running!');
 });
 
 const wss = new WebSocketServer({ server });
 
-let displaySocket = null;
-// Players is now an ARRAY to enforce order.
-// { ws: socket, id: string, name: string }
+// --- STATE MANAGEMENT ---
+// Players queue: Array of { ws, id, name }
+// Index 0 is ALWAYS the active player.
 let players = []; 
+let displaySocket = null;
 
 console.log(`Server started on port ${port}`);
 
+// --- BROADCAST HELPER ---
+function broadcastState() {
+    // 1. Prepare Data
+    const queueData = players.map(p => ({
+        id: p.id,
+        name: p.name
+    }));
+
+    const activePlayer = players.length > 0 ? players[0] : null;
+    
+    const payload = {
+        queue: queueData,
+        activePlayerId: activePlayer ? activePlayer.id : null,
+        activePlayerName: activePlayer ? activePlayer.name : null
+    };
+
+    const message = JSON.stringify({
+        type: 'STATE_UPDATE',
+        payload: payload
+    });
+
+    // 2. Send to Display
+    if (displaySocket && displaySocket.readyState === 1) {
+        displaySocket.send(message);
+    }
+
+    // 3. Send to Controllers (Also notify them of their own ID confirmation/turn status)
+    players.forEach(p => {
+        if (p.ws.readyState === 1) {
+            p.ws.send(message);
+        }
+    });
+}
+
 wss.on('connection', (ws) => {
+    ws.id = uuidv4();
     ws.isAlive = true;
-    ws.id = uuidv4(); 
+    ws.role = 'UNKNOWN'; // 'DISPLAY' or 'CONTROLLER'
 
     ws.on('pong', () => { ws.isAlive = true; });
 
-    ws.on('message', (message) => {
+    ws.on('message', (rawMessage) => {
         try {
-            const data = JSON.parse(message);
+            const data = JSON.parse(rawMessage);
 
-            switch (data.type) {
-                case 'REGISTER_DISPLAY':
-                    console.log('Display connected/reconnected');
-                    // Always update the display socket reference
-                    displaySocket = ws;
-                    ws.role = 'DISPLAY';
-                    broadcastState();
-                    break;
-
-                case 'REGISTER_CONTROLLER':
-                    const playerName = data.payload.name || `P-${ws.id.substr(0,4)}`;
-                    console.log(`Player Join: ${playerName}`);
-                    
-                    ws.role = 'CONTROLLER';
-                    ws.playerName = playerName;
-                    
-                    // Add to end of queue
-                    players.push({ ws, id: ws.id, name: playerName });
-                    console.log(`Queue updated. Total: ${players.length}. List: ${players.map(p=>p.name).join(', ')}`);
-
-                    // Tell controller its ID
-                    ws.send(JSON.stringify({
-                        type: 'REGISTERED',
-                        payload: { id: ws.id }
-                    }));
-
-                    broadcastState();
-                    break;
-
-                case 'SET_ACTIVE_PLAYER':
-                    // Allow display to set active player (jump queue)
-                    if (ws.role === 'DISPLAY' || ws === displaySocket) {
-                        const targetId = data.payload;
-                        console.log(`Teacher requested: ${targetId}`);
-                        
-                        if (targetId) {
-                            const index = players.findIndex(p => p.id === targetId);
-                            if (index > -1) {
-                                // MOVE TO FRONT (Jump Queue)
-                                const p = players.splice(index, 1)[0];
-                                players.unshift(p);
-                                console.log(`Moved ${p.name} to front of queue.`);
-                            }
-                        }
-                        broadcastState();
-                    }
-                    break;
-
-                case 'ACTION':
-                    if (ws.role === 'CONTROLLER') {
-                        // Strict Rule: Only Index 0 can play
-                        const activePlayer = players[0];
-                        
-                        if (activePlayer && activePlayer.id === ws.id) {
-                            console.log(`Action accepted from leader: ${ws.playerName}`);
-                            if (displaySocket && displaySocket.readyState === 1) {
-                                displaySocket.send(JSON.stringify({
-                                    type: 'ACTION',
-                                    payload: data.action, 
-                                    player: ws.playerName
-                                }));
-                            }
-                        }
-                    }
-                    break;
-                
-                case 'FEEDBACK':
-                    // Relay vibration from Display to Controller
-                    if (players.length > 0) {
-                        const activePlayer = players[0];
-                        if (activePlayer && activePlayer.ws.readyState === 1) {
-                            activePlayer.ws.send(JSON.stringify({
-                                type: 'FEEDBACK',
-                                payload: data.payload 
-                            }));
-                        }
-                    }
-                    break;
-
-                case 'NEXT_TURN':
-                    // CRITICAL FIX: Removed strict check (ws === displaySocket) to allow reconnected display to work.
-                    // We simply trust the command if it's NOT a known controller, or if it is the display role.
-                    console.log("NEXT_TURN command received.");
-
-                    if (players.length > 0) {
-                        // 1. Move first player to the end (Rotate)
-                        const p = players.shift();
-                        players.push(p);
-                        
-                        console.log(`Rotated Queue. Previous: ${p.name} -> Moved to End.`);
-                        console.log(`New Leader: ${players[0].name}`);
-                    } else {
-                        console.log("Queue empty, cannot rotate.");
-                    }
-                    
-                    // 2. Broadcast the NEW state immediately
-                    broadcastState();
-                    break;
-
-                case 'PING':
-                    ws.send(JSON.stringify({ type: 'PONG' }));
-                    break;
+            // --- 1. REGISTRATION ---
+            if (data.type === 'REGISTER_DISPLAY') {
+                console.log('[CONN] Display Registered');
+                // Force close old display connection if exists to prevent ghost inputs
+                if (displaySocket && displaySocket !== ws && displaySocket.readyState === 1) {
+                    displaySocket.close();
+                }
+                displaySocket = ws;
+                ws.role = 'DISPLAY';
+                broadcastState();
+                return;
             }
+
+            if (data.type === 'REGISTER_CONTROLLER') {
+                const name = data.payload.name || `P-${ws.id.substr(0,4)}`;
+                console.log(`[CONN] Player Joined: ${name}`);
+                
+                ws.role = 'CONTROLLER';
+                ws.playerName = name;
+                
+                // Add to END of queue
+                players.push({ ws, id: ws.id, name });
+                
+                // Send specific registration success to this phone
+                ws.send(JSON.stringify({
+                    type: 'REGISTERED',
+                    payload: { id: ws.id }
+                }));
+
+                broadcastState();
+                return;
+            }
+
+            // --- 2. GAME COMMANDS (DISPLAY ONLY) ---
+            
+            // NEXT_TURN: The core rotation logic
+            if (data.type === 'NEXT_TURN') {
+                // Security: Only allow Display to force turns
+                if (ws.role !== 'DISPLAY') return;
+
+                console.log('[GAME] Next Turn Requested');
+
+                if (players.length > 0) {
+                    // ROTATION LOGIC:
+                    // Take the first player (Head)
+                    const p = players.shift();
+                    // Put them at the end (Tail)
+                    players.push(p);
+                    
+                    console.log(`[GAME] Queue Rotated. New Leader: ${players[0].name}`);
+                } else {
+                    console.log('[GAME] Queue empty, cannot rotate.');
+                }
+
+                broadcastState();
+                return;
+            }
+
+            // SET_ACTIVE_PLAYER: Jump queue logic
+            if (data.type === 'SET_ACTIVE_PLAYER') {
+                if (ws.role !== 'DISPLAY') return;
+                
+                const targetId = data.payload;
+                console.log(`[GAME] Force Select: ${targetId}`);
+
+                if (targetId) {
+                    const idx = players.findIndex(p => p.id === targetId);
+                    if (idx > -1) {
+                        // Remove from current position
+                        const p = players.splice(idx, 1)[0];
+                        // Insert at front
+                        players.unshift(p);
+                    }
+                }
+                broadcastState();
+                return;
+            }
+
+            // --- 3. PLAYER ACTIONS (CONTROLLER ONLY) ---
+            if (data.type === 'ACTION') {
+                if (ws.role !== 'CONTROLLER') return;
+
+                // STRICT CHECK: Is this socket the active player (Index 0)?
+                const activePlayer = players[0];
+                
+                if (activePlayer && activePlayer.id === ws.id) {
+                    // Forward to Display
+                    if (displaySocket && displaySocket.readyState === 1) {
+                        displaySocket.send(JSON.stringify({
+                            type: 'ACTION',
+                            payload: data.action,
+                            player: ws.playerName
+                        }));
+                    }
+                }
+                return;
+            }
+
+            // --- 4. FEEDBACK (Display -> Controller) ---
+            if (data.type === 'FEEDBACK') {
+                if (ws.role !== 'DISPLAY') return;
+                
+                // Send vibration/feedback only to the ACTIVE player
+                if (players.length > 0) {
+                    const activePlayer = players[0];
+                    if (activePlayer.ws.readyState === 1) {
+                        activePlayer.ws.send(JSON.stringify({
+                            type: 'FEEDBACK',
+                            payload: data.payload
+                        }));
+                    }
+                }
+            }
+
         } catch (e) {
-            console.error('Error parsing message:', e);
+            console.error('Msg Error:', e);
         }
     });
 
     ws.on('close', () => {
-        if (ws === displaySocket) {
-            console.log('Display disconnected');
+        if (ws.role === 'DISPLAY') {
+            console.log('[CONN] Display Disconnected');
             displaySocket = null;
         } else if (ws.role === 'CONTROLLER') {
-            console.log(`Player Left: ${ws.playerName}`);
-            // Remove from queue
-            players = players.filter(p => p.ws !== ws);
+            console.log(`[CONN] Player Left: ${ws.playerName}`);
+            players = players.filter(p => p.id !== ws.id);
             broadcastState();
         }
     });
 });
 
-function broadcastState() {
-    // 1. Queue Update
-    const queueList = players.map(p => ({
-        id: p.id,
-        name: p.name
-    }));
-
-    // 2. Who is active? ALWAYS index 0
-    const activePlayer = players.length > 0 ? players[0] : null;
-    const activeId = activePlayer ? activePlayer.id : null;
-    const activeName = activePlayer ? activePlayer.name : null;
-
-    const msgQueue = JSON.stringify({ type: 'QUEUE_UPDATE', payload: queueList });
-    const msgTurnId = JSON.stringify({ type: 'CURRENT_PLAYER_ID', payload: activeId });
-    const msgTurnName = JSON.stringify({ type: 'CURRENT_PLAYER', payload: activeName });
-
-    // Send to Display
-    if (displaySocket && displaySocket.readyState === 1) {
-        displaySocket.send(msgQueue);
-        displaySocket.send(msgTurnId);
-        displaySocket.send(msgTurnName);
-    }
-
-    // Send to Controllers
-    players.forEach(p => {
-        if (p.ws.readyState === 1) {
-            p.ws.send(msgQueue);
-            p.ws.send(msgTurnId);
-            p.ws.send(msgTurnName);
-        }
-    });
-}
-
-// Heartbeat
-const interval = setInterval(function ping() {
-    wss.clients.forEach(function each(ws) {
+// Keep-alive heartbeat
+const interval = setInterval(() => {
+    wss.clients.forEach((ws) => {
         if (ws.isAlive === false) return ws.terminate();
         ws.isAlive = false;
         ws.ping();
     });
 }, 30000);
 
-wss.on('close', function close() {
-    clearInterval(interval);
-});
+wss.on('close', () => clearInterval(interval));
 
 server.listen(port);
