@@ -41,13 +41,14 @@ wss.on('connection', (ws) => {
 
                 case 'REGISTER_CONTROLLER':
                     const playerName = data.payload.name || `P-${ws.id.substr(0,4)}`;
-                    console.log(`Player Join: ${playerName} (Total: ${players.length + 1})`);
+                    console.log(`Player Join: ${playerName}`);
                     
                     ws.role = 'CONTROLLER';
                     ws.playerName = playerName;
                     
                     // Add to end of queue
                     players.push({ ws, id: ws.id, name: playerName });
+                    console.log(`Queue updated. Total: ${players.length}. List: ${players.map(p=>p.name).join(', ')}`);
 
                     // Tell controller its ID
                     ws.send(JSON.stringify({
@@ -114,17 +115,15 @@ wss.on('connection', (ws) => {
                 // NEW: Cycle the queue for the next turn
                 case 'NEXT_TURN':
                     if (ws === displaySocket || ws.role === 'DISPLAY') {
-                        console.log(`NEXT_TURN received. Current Queue Length: ${players.length}`);
+                        console.log(`NEXT_TURN received. Current Queue: ${players.map(p=>p.name).join(', ')}`);
                         
-                        // 1. Clean up dead connections first to ensure rotation is real
-                        players = players.filter(p => p.ws.readyState === 1);
-
                         if (players.length > 0) {
-                            // 2. Rotate: Shift first to last
+                            // Rotate: Shift first to last
                             const p = players.shift(); 
                             players.push(p); 
                             
                             console.log(`Turn cycled. New Leader: ${players[0]?.name}`);
+                            console.log(`New Queue Order: ${players.map(p=>p.name).join(', ')}`);
                         } else {
                              console.log("Queue empty, cannot cycle.");
                         }
