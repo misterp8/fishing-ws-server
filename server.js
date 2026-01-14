@@ -28,7 +28,7 @@ function broadcastState() {
     }));
 
     const activePlayer = players.length > 0 ? players[0] : null;
-    
+    console.log(`[BROADCAST] Queue: [${queueData.map(p => p.name).join(', ')}], Active: ${activePlayer?.name || 'None'}`);
     const payload = {
         queue: queueData,
         activePlayerId: activePlayer ? activePlayer.id : null,
