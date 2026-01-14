@@ -101,47 +101,42 @@ wss.on('connection', (ws) => {
             
             // NEXT_TURN: AGGRESSIVE KICK WITH DELAYED CLOSE
             if (data.type === 'NEXT_TURN') {
-                // Check if sender is display (Relaxed check: allow if it matches displaySocket ref)
-                const isDisplay = ws.role === 'DISPLAY' || ws === displaySocket;
-                if (!isDisplay) return;
+    const isDisplay = ws.role === 'DISPLAY' || ws === displaySocket;
+    if (!isDisplay) return;
 
-                console.log('[GAME] Next Turn Requested');
+    console.log('[GAME] Next Turn Requested');
 
-                if (players.length > 0) {
-                    // 1. Capture the player to be removed
-                    const finishingPlayer = players[0];
-                    
-                    // 2. Remove from queue IMMEDIATELY so they don't get the next state update
-                    players.shift();
-                    console.log(`[GAME] Removed ${finishingPlayer.name}. Queue length: ${players.length}`);
+    if (players.length > 0) {
+        // 1. 抓取第一位玩家
+        const finishingPlayer = players[0];
+        
+        // 2. 立即從陣列移除
+        players.shift();
+        console.log(`[GAME] Removed ${finishingPlayer.name}. Queue length: ${players.length}`);
 
-                    // 3. Send FORCE_RELOAD and Schedule Close
-                    if (finishingPlayer && finishingPlayer.ws.readyState === 1) {
-                         console.log(`[GAME] Sending FORCE_RELOAD to ${finishingPlayer.name}`);
-                         try {
-                            // Send command to force client reload
-                            finishingPlayer.ws.send(JSON.stringify({ type: 'FORCE_RELOAD' }));
-                            
-                            // CRITICAL: Do NOT close socket immediately. 
-                            // Give the network time (2s) to deliver the message.
-                            // The client's reload action will naturally close the socket cleanly.
-                            // This timeout is just a cleanup fallback.
-                            setTimeout(() => {
-                                if (finishingPlayer.ws.readyState === 1) {
-                                    console.log(`[GAME] Cleaning up socket for ${finishingPlayer.name}`);
-                                    finishingPlayer.ws.close();
-                                }
-                            }, 2000);
-
-                         } catch (err) {
-                             console.error("Error kicking player:", err);
-                         }
+        // 3. 送 FORCE_RELOAD
+        if (finishingPlayer && finishingPlayer.ws.readyState === 1) {
+            console.log(`[GAME] Sending FORCE_RELOAD to ${finishingPlayer.name}`);
+            try {
+                finishingPlayer.ws.send(JSON.stringify({ type: 'FORCE_RELOAD' }));
+                
+                // 延遲關閉 socket
+                setTimeout(() => {
+                    if (finishingPlayer.ws.readyState === 1) {
+                        console.log(`[GAME] Cleaning up socket for ${finishingPlayer.name}`);
+                        finishingPlayer.ws.close();
                     }
-                }
+                }, 2000);
 
-                broadcastState();
-                return;
+            } catch (err) {
+                console.error("Error kicking player:", err);
             }
+        }
+    }
+
+    broadcastState();
+    return;
+}
 
             // SET_ACTIVE_PLAYER: Jump queue logic
             if (data.type === 'SET_ACTIVE_PLAYER') {
