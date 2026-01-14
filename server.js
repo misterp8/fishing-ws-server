@@ -93,7 +93,7 @@ wss.on('connection', (ws) => {
                             }
                         } else {
                             // Debugging
-                            const rank = players.findIndex(p => p.id === ws.id);
+                            // const rank = players.findIndex(p => p.id === ws.id);
                             // console.log(`Ignored action from Rank ${rank} (${ws.playerName}). Leader is ${activePlayer?.name}`);
                         }
                     }
@@ -117,15 +117,15 @@ wss.on('connection', (ws) => {
                     if (ws === displaySocket || ws.role === 'DISPLAY') {
                         console.log(`NEXT_TURN received. Current Queue: ${players.map(p=>p.name).join(', ')}`);
                         
-                        if (players.length > 0) {
-                            // Rotate: Shift first to last
+                        if (players.length > 1) {
+                            // FORCE ROTATION
                             const p = players.shift(); 
                             players.push(p); 
                             
-                            console.log(`Turn cycled. New Leader: ${players[0]?.name}`);
+                            console.log(`Forced Rotation. Old Leader: ${p.name}, New Leader: ${players[0]?.name}`);
                             console.log(`New Queue Order: ${players.map(p=>p.name).join(', ')}`);
                         } else {
-                             console.log("Queue empty, cannot cycle.");
+                             console.log("Queue <= 1, keeping current order.");
                         }
                         
                         broadcastState();
