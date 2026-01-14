@@ -119,19 +119,19 @@ wss.on('connection', (ws) => {
                     if (finishingPlayer && finishingPlayer.ws.readyState === 1) {
                          console.log(`[GAME] Sending FORCE_RELOAD to ${finishingPlayer.name}`);
                          try {
-                            // Send command
+                            // Send command to force client reload
                             finishingPlayer.ws.send(JSON.stringify({ type: 'FORCE_RELOAD' }));
                             
-                            // CRITICAL FIX: Do NOT close immediately.
-                            // Give the network 1000ms to deliver the message. 
-                            // The client will reload, which naturally closes the socket.
-                            // This timeout is just a fallback to clean up if the client fails to reload.
+                            // CRITICAL: Do NOT close socket immediately. 
+                            // Give the network time (2s) to deliver the message.
+                            // The client's reload action will naturally close the socket cleanly.
+                            // This timeout is just a cleanup fallback.
                             setTimeout(() => {
                                 if (finishingPlayer.ws.readyState === 1) {
-                                    console.log(`[GAME] Closing socket for ${finishingPlayer.name} after delay.`);
+                                    console.log(`[GAME] Cleaning up socket for ${finishingPlayer.name}`);
                                     finishingPlayer.ws.close();
                                 }
-                            }, 1000);
+                            }, 2000);
 
                          } catch (err) {
                              console.error("Error kicking player:", err);
@@ -215,7 +215,8 @@ wss.on('connection', (ws) => {
         // Check if it was a player
         const pIndex = players.findIndex(p => p.id === ws.id);
         if (pIndex > -1) {
-            // Only remove if they are still in the list (e.g., unexpected disconnect)
+            // Only remove if they are still in the list
+            // (If NEXT_TURN already removed them, this index will be -1, which is correct)
             const p = players[pIndex];
             console.log(`[CONN] Player Left (Connection Closed): ${p.name}`);
             players.splice(pIndex, 1);
