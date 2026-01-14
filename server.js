@@ -99,7 +99,7 @@ wss.on('connection', (ws) => {
 
             // --- 2. GAME COMMANDS (DISPLAY ONLY) ---
             
-            // NEXT_TURN: Kick current player and rotate
+            // NEXT_TURN: Kick current player and shift queue
             if (data.type === 'NEXT_TURN') {
                 // Check if sender is display (Relaxed check: allow if it matches displaySocket ref)
                 const isDisplay = ws.role === 'DISPLAY' || ws === displaySocket;
@@ -108,24 +108,20 @@ wss.on('connection', (ws) => {
                 console.log('[GAME] Next Turn Requested');
 
                 if (players.length > 0) {
-                    const currentLeader = players[0];
+                    const finishingPlayer = players[0];
                     
-                    // 1. Force Reload the current leader (This will cause disconnect -> remove from queue logic eventually)
-                    // But we also rotate immediately for visual feedback.
-                    if (currentLeader && currentLeader.ws.readyState === 1) {
-                         console.log(`[GAME] Sending FORCE_RELOAD to ${currentLeader.name}`);
-                         currentLeader.ws.send(JSON.stringify({ type: 'FORCE_RELOAD' }));
+                    // 1. Send FORCE_RELOAD to the player who is done (Kick them out)
+                    if (finishingPlayer && finishingPlayer.ws.readyState === 1) {
+                         console.log(`[GAME] Sending FORCE_RELOAD to ${finishingPlayer.name}`);
+                         finishingPlayer.ws.send(JSON.stringify({ type: 'FORCE_RELOAD' }));
                     }
 
-                    // 2. ROTATION LOGIC: Move first to last
-                    if (players.length > 1) {
-                        const [first, ...rest] = players;
-                        players = [...rest, first];
-                        console.log(`[GAME] Queue Rotated. New Leader: ${players[0].name}`);
-                    } else {
-                        // Single player case: They reload, disconnect, and rejoin.
-                        console.log('[GAME] Single player mode - reloading player.');
-                    }
+                    // 2. REMOVE THEM from the queue immediately.
+                    // This creates space for the next person.
+                    // We DO NOT rotate them to the back. We remove them.
+                    players.shift();
+                    
+                    console.log(`[GAME] Player removed. Queue length: ${players.length}`);
                 }
 
                 broadcastState();
@@ -204,8 +200,9 @@ wss.on('connection', (ws) => {
         // Check if it was a player
         const pIndex = players.findIndex(p => p.id === ws.id);
         if (pIndex > -1) {
+            // Only remove if they are still in the list (i.e. if NEXT_TURN didn't remove them yet)
             const p = players[pIndex];
-            console.log(`[CONN] Player Left: ${p.name}`);
+            console.log(`[CONN] Player Left (Connection Closed): ${p.name}`);
             players.splice(pIndex, 1);
             broadcastState();
         }
