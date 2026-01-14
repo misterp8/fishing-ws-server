@@ -101,19 +101,19 @@ wss.on('connection', (ws) => {
             
             // NEXT_TURN: The core rotation logic
             if (data.type === 'NEXT_TURN') {
-                // Security: Only allow Display to force turns
-                if (ws.role !== 'DISPLAY') return;
+                // Check if sender is display (Relaxed check: allow if it matches displaySocket ref)
+                const isDisplay = ws.role === 'DISPLAY' || ws === displaySocket;
+                if (!isDisplay) return;
 
                 console.log('[GAME] Next Turn Requested');
 
-                if (players.length > 0) {
-                    // ROTATION LOGIC:
-                    // Take the first player (Head)
-                    const p = players.shift();
-                    // Put them at the end (Tail)
-                    players.push(p);
-                    
+                if (players.length > 1) {
+                    // ROTATION LOGIC: Move first to last
+                    const [first, ...rest] = players;
+                    players = [...rest, first];
                     console.log(`[GAME] Queue Rotated. New Leader: ${players[0].name}`);
+                } else if (players.length === 1) {
+                    console.log('[GAME] Single player mode - staying as leader.');
                 } else {
                     console.log('[GAME] Queue empty, cannot rotate.');
                 }
@@ -124,7 +124,8 @@ wss.on('connection', (ws) => {
 
             // SET_ACTIVE_PLAYER: Jump queue logic
             if (data.type === 'SET_ACTIVE_PLAYER') {
-                if (ws.role !== 'DISPLAY') return;
+                const isDisplay = ws.role === 'DISPLAY' || ws === displaySocket;
+                if (!isDisplay) return;
                 
                 const targetId = data.payload;
                 console.log(`[GAME] Force Select: ${targetId}`);
@@ -164,7 +165,8 @@ wss.on('connection', (ws) => {
 
             // --- 4. FEEDBACK (Display -> Controller) ---
             if (data.type === 'FEEDBACK') {
-                if (ws.role !== 'DISPLAY') return;
+                const isDisplay = ws.role === 'DISPLAY' || ws === displaySocket;
+                if (!isDisplay) return;
                 
                 // Send vibration/feedback only to the ACTIVE player
                 if (players.length > 0) {
@@ -184,12 +186,17 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        if (ws.role === 'DISPLAY') {
+        if (ws.role === 'DISPLAY' || ws === displaySocket) {
             console.log('[CONN] Display Disconnected');
-            displaySocket = null;
-        } else if (ws.role === 'CONTROLLER') {
-            console.log(`[CONN] Player Left: ${ws.playerName}`);
-            players = players.filter(p => p.id !== ws.id);
+            if (displaySocket === ws) displaySocket = null;
+        } 
+        
+        // Check if it was a player
+        const pIndex = players.findIndex(p => p.id === ws.id);
+        if (pIndex > -1) {
+            const p = players[pIndex];
+            console.log(`[CONN] Player Left: ${p.name}`);
+            players.splice(pIndex, 1);
             broadcastState();
         }
     });
