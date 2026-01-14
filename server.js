@@ -99,7 +99,7 @@ wss.on('connection', (ws) => {
 
             // --- 2. GAME COMMANDS (DISPLAY ONLY) ---
             
-            // NEXT_TURN: AGGRESSIVE KICK
+            // NEXT_TURN: AGGRESSIVE KICK WITH DELAYED CLOSE
             if (data.type === 'NEXT_TURN') {
                 // Check if sender is display (Relaxed check: allow if it matches displaySocket ref)
                 const isDisplay = ws.role === 'DISPLAY' || ws === displaySocket;
@@ -115,13 +115,24 @@ wss.on('connection', (ws) => {
                     players.shift();
                     console.log(`[GAME] Removed ${finishingPlayer.name}. Queue length: ${players.length}`);
 
-                    // 3. Send FORCE_RELOAD and CLOSE SOCKET
+                    // 3. Send FORCE_RELOAD and Schedule Close
                     if (finishingPlayer && finishingPlayer.ws.readyState === 1) {
-                         console.log(`[GAME] Sending FORCE_RELOAD to ${finishingPlayer.name} and closing socket.`);
+                         console.log(`[GAME] Sending FORCE_RELOAD to ${finishingPlayer.name}`);
                          try {
+                            // Send command
                             finishingPlayer.ws.send(JSON.stringify({ type: 'FORCE_RELOAD' }));
-                            // Force close from server side to prevent ghost connections
-                            finishingPlayer.ws.close(); 
+                            
+                            // CRITICAL FIX: Do NOT close immediately.
+                            // Give the network 1000ms to deliver the message. 
+                            // The client will reload, which naturally closes the socket.
+                            // This timeout is just a fallback to clean up if the client fails to reload.
+                            setTimeout(() => {
+                                if (finishingPlayer.ws.readyState === 1) {
+                                    console.log(`[GAME] Closing socket for ${finishingPlayer.name} after delay.`);
+                                    finishingPlayer.ws.close();
+                                }
+                            }, 1000);
+
                          } catch (err) {
                              console.error("Error kicking player:", err);
                          }
