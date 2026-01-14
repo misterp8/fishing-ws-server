@@ -99,7 +99,7 @@ wss.on('connection', (ws) => {
 
             // --- 2. GAME COMMANDS (DISPLAY ONLY) ---
             
-            // NEXT_TURN: The core rotation logic
+            // NEXT_TURN: Kick current player and rotate
             if (data.type === 'NEXT_TURN') {
                 // Check if sender is display (Relaxed check: allow if it matches displaySocket ref)
                 const isDisplay = ws.role === 'DISPLAY' || ws === displaySocket;
@@ -107,15 +107,25 @@ wss.on('connection', (ws) => {
 
                 console.log('[GAME] Next Turn Requested');
 
-                if (players.length > 1) {
-                    // ROTATION LOGIC: Move first to last
-                    const [first, ...rest] = players;
-                    players = [...rest, first];
-                    console.log(`[GAME] Queue Rotated. New Leader: ${players[0].name}`);
-                } else if (players.length === 1) {
-                    console.log('[GAME] Single player mode - staying as leader.');
-                } else {
-                    console.log('[GAME] Queue empty, cannot rotate.');
+                if (players.length > 0) {
+                    const currentLeader = players[0];
+                    
+                    // 1. Force Reload the current leader (This will cause disconnect -> remove from queue logic eventually)
+                    // But we also rotate immediately for visual feedback.
+                    if (currentLeader && currentLeader.ws.readyState === 1) {
+                         console.log(`[GAME] Sending FORCE_RELOAD to ${currentLeader.name}`);
+                         currentLeader.ws.send(JSON.stringify({ type: 'FORCE_RELOAD' }));
+                    }
+
+                    // 2. ROTATION LOGIC: Move first to last
+                    if (players.length > 1) {
+                        const [first, ...rest] = players;
+                        players = [...rest, first];
+                        console.log(`[GAME] Queue Rotated. New Leader: ${players[0].name}`);
+                    } else {
+                        // Single player case: They reload, disconnect, and rejoin.
+                        console.log('[GAME] Single player mode - reloading player.');
+                    }
                 }
 
                 broadcastState();
