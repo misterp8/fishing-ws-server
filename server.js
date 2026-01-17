@@ -1,109 +1,138 @@
 const WebSocket = require('ws');
+const http = require('http');
 
-const PORT = process.env.PORT || 8080;
-const wss = new WebSocket.Server({ port: PORT });
+// 建立 HTTP 伺服器 (這只是為了符合 Render.com 的標準 WebSocket 部署需求)
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Fishing WebSocket Server is Running');
+});
 
-let teacherWs = null;
-let students = {}; // { id: { ws, name } }
+const wss = new WebSocket.Server({ server });
 
-console.log(`WebSocket Server is running on port ${PORT}`);
+// 存儲連線的學生資訊
+// 結構: { id: ws.id, name: "Student Name", role: 'student' | 'teacher', ws: ws }
+const clients = new Map();
+let activeControllerId = null; // 當前擁有控制權的學生 ID
 
 wss.on('connection', (ws) => {
-    let id = null;
-    let role = null;
+    // 生成唯一 ID
+    ws.id = Math.random().toString(36).substr(2, 9);
+    console.log(`Client connected: ${ws.id}`);
 
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
             
-            switch (data.type) {
-                case 'teacher_join':
-                    // 如果已有老師，斷開舊連線 (或可設定為允許多個老師，這裡簡化為單一老師)
-                    if (teacherWs && teacherWs !== ws) {
-                        teacherWs.send(JSON.stringify({ type: 'force_logout' }));
-                        teacherWs.close();
-                    }
-                    teacherWs = ws;
-                    role = 'TEACHER';
-                    console.log('Teacher connected');
-                    // 發送當前學生列表給老師
-                    ws.send(JSON.stringify({ 
-                        type: 'update_students', 
-                        students: Object.values(students).map(s => ({ id: s.id, name: s.name }))
-                    }));
-                    break;
-
-                case 'student_join':
-                    id = data.id || Math.random().toString(36).substr(2, 9);
-                    role = 'STUDENT';
-                    students[id] = { ws, name: data.name, id };
-                    
-                    if (teacherWs && teacherWs.readyState === WebSocket.OPEN) {
-                        teacherWs.send(JSON.stringify({ 
-                            type: 'student_connected', 
-                            student: { id, name: data.name } 
-                        }));
-                    }
-                    // 確認連線給學生
-                    ws.send(JSON.stringify({ type: 'connected', id }));
-                    console.log(`Student ${data.name} connected`);
-                    break;
-
-                case 'transfer_control':
-                    // 老師選擇學生
-                    if (role === 'TEACHER' && teacherWs === ws) {
-                        const targetId = data.studentId;
-                        
-                        // 通知所有學生
-                        Object.values(students).forEach(s => {
-                            if (s.ws.readyState === WebSocket.OPEN) {
-                                const isActive = (s.id === targetId);
-                                s.ws.send(JSON.stringify({ 
-                                    type: 'control_update', 
-                                    active: isActive 
-                                }));
-                                
-                                if (isActive) {
-                                    // 觸發震動
-                                    s.ws.send(JSON.stringify({ type: 'vibrate' }));
-                                }
-                            }
-                        });
-                        
-                        // 更新老師端 UI 狀態 (廣播回老師確認)
-                        ws.send(JSON.stringify({ type: 'control_sync', studentId: targetId }));
-                    }
-                    break;
-
-                case 'action':
-                    // 學生發送動作 (aim, interact)
-                    if (role === 'STUDENT' && students[id]) {
-                        // 轉發給老師
-                        if (teacherWs && teacherWs.readyState === WebSocket.OPEN) {
-                            teacherWs.send(JSON.stringify({
-                                type: 'student_action',
-                                action: data.action,
-                                payload: data.payload
-                            }));
-                        }
-                    }
-                    break;
+            // 處理學生加入
+            if (data.type === 'JOIN_STUDENT') {
+                const student = {
+                    id: ws.id,
+                    name: data.name || `Student ${ws.id.substr(0,4)}`,
+                    role: 'student',
+                    ws: ws
+                };
+                clients.set(ws.id, student);
+                broadcastStudentList();
             }
-        } catch (err) {
-            console.error('Error processing message:', err);
+            
+            // 處理教師端確認身分 (簡單的第一個連線視為教師或特定標記)
+            else if (data.type === 'JOIN_TEACHER') {
+                const teacher = {
+                    id: ws.id,
+                    name: 'Teacher',
+                    role: 'teacher',
+                    ws: ws
+                };
+                clients.set(ws.id, teacher);
+                // 更新教師那邊的列表
+                broadcastStudentList(); 
+            }
+
+            // 處理教師選擇學生
+            else if (data.type === 'GRANT_CONTROL' && data.targetId) {
+                revokeCurrentControl(); // 先收回舊控制權
+                activeControllerId = data.targetId;
+                
+                const targetStudent = clients.get(activeControllerId);
+                if (targetStudent && targetStudent.ws.readyState === WebSocket.OPEN) {
+                    targetStudent.ws.send(JSON.stringify({ type: 'CONTROL_GRANTED' }));
+                    console.log(`Control granted to ${targetStudent.name}`);
+                }
+                broadcastStudentList();
+            }
+
+            // 處理收回控制權 (遊戲結束或手動收回)
+            else if (data.type === 'REVOKE_CONTROL') {
+                revokeCurrentControl();
+                broadcastStudentList();
+            }
+
+            // 轉發學生的遊戲操作給教師端
+            else if (data.type === 'GAME_ACTION') {
+                // 只有擁有控制權的學生才能操作
+                if (ws.id === activeControllerId) {
+                    // 廣播給教師端
+                    broadcastTo Teachers(data);
+                }
+            }
+
+        } catch (e) {
+            console.error("Error processing message:", e);
         }
     });
 
     ws.on('close', () => {
-        if (role === 'TEACHER' && teacherWs === ws) {
-            teacherWs = null;
-            console.log('Teacher disconnected');
-        } else if (role === 'STUDENT' && id) {
-            delete students[id];
-            if (teacherWs && teacherWs.readyState === WebSocket.OPEN) {
-                teacherWs.send(JSON.stringify({ type: 'student_disconnected', id }));
-            }
-            console.log(`Student ${id} disconnected`);
+        console.log(`Client disconnected: ${ws.id}`);
+        if (ws.id === activeControllerId) {
+            activeControllerId = null;
+        }
+        clients.delete(ws.id);
+        broadcastStudentList();
+    });
+});
+
+function revokeCurrentControl() {
+    if (activeControllerId) {
+        const student = clients.get(activeControllerId);
+        if (student && student.ws.readyState === WebSocket.OPEN) {
+            student.ws.send(JSON.stringify({ type: 'CONTROL_REVOKED' }));
+        }
+        activeControllerId = null;
+    }
+}
+
+function broadcastStudentList() {
+    const studentList = [];
+    clients.forEach((client) => {
+        if (client.role === 'student') {
+            studentList.push({
+                id: client.id,
+                name: client.name,
+                isActive: (client.id === activeControllerId)
+            });
         }
     });
+
+    const message = JSON.stringify({ type: 'STUDENT_LIST', list: studentList });
+    
+    // 只發送給老師
+    clients.forEach((client) => {
+        if (client.role === 'teacher' && client.ws.readyState === WebSocket.OPEN) {
+            client.ws.send(message);
+        }
+    });
+}
+
+function broadcastToTeachers(data) {
+    const message = JSON.stringify(data);
+    clients.forEach((client) => {
+        if (client.role === 'teacher' && client.ws.readyState === WebSocket.OPEN) {
+            client.ws.send(message);
+        }
+    });
+}
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`WebSocket Server is running on port ${PORT}`);
 });
