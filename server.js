@@ -72,7 +72,7 @@ wss.on('connection', (ws) => {
                 // 只有擁有控制權的學生才能操作
                 if (ws.id === activeControllerId) {
                     // 廣播給教師端
-                    broadcastTo Teachers(data);
+                    broadcastToTeachers(data); // <--- 這裡已修正
                 }
             }
 
