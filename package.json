@@ -1,16 +1,7 @@
 {
-  "name": "fishing-game-server",
+  "name": "fishing-server",
   "version": "1.0.0",
-  "description": "WebSocket server for 3D Fishing Game",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "ws": "^8.16.0",
-    "uuid": "^9.0.1"
-  },
-  "engines": {
-    "node": ">=16.0.0"
-  }
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "ws": "^8.14.2" }
 }
