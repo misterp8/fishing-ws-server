@@ -1,1 +1,1 @@
-# Fishing Game WebSocket Serve
+# Fishing Game WebSocket Server
