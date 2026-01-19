@@ -60,23 +60,8 @@ wss.on('connection', (ws) => {
 
             // 處理收回控制權
             else if (data.type === 'REVOKE_CONTROL') {
-                console.log("Teacher requested REVOKE_CONTROL");
-                
-                // 1. 清除 Server 端的控制者 ID
-                if (activeControllerId) {
-                    const student = clients.get(activeControllerId);
-                    if (student && student.ws.readyState === WebSocket.OPEN) {
-                        student.ws.send(JSON.stringify({ type: 'CONTROL_REVOKED' }));
-                        console.log(`Notified ${student.name} of revocation`);
-                    }
-                    activeControllerId = null;
-                }
-                // 2. 廣報最新的學生列表給老師 (這會讓前端 UI 更新)
+                revokeCurrentControl();
                 broadcastStudentList();
-                
-                // [新增] 3. 廣報一個「控制權已收回」的通知給老師 (確保前端同步)
-                // 這是雙重保險，防止前端 UI 沒更新
-                broadcastToTeachers({ type: 'CONTROL_REVOKED_CONFIRM' });
             }
 
             // [修改重點] 轉發遊戲狀態更新給指定學生 (解決咬餌震動問題)
